@@ -282,7 +282,7 @@ static WGPUProgrammableStageDescriptor ImGui_ImplWGPU_CreateShaderModule(uint32_
 
 static WGPUBindGroup ImGui_ImplWGPU_CreateImageBindGroup(WGPUBindGroupLayout layout, WGPUTextureView texture)
 {
-    WGPUBindGroupEntry image_bg_entries[] = { { nullptr, 0, 0, 0, 0, 0, texture } };
+    WGPUBindGroupEntry image_bg_entries[] = { { NULL, 0, 0, 0, 0, 0, texture } };
 
     WGPUBindGroupDescriptor image_bg_descriptor = {};
     image_bg_descriptor.layout = layout;
@@ -556,7 +556,7 @@ bool ImGui_ImplWGPU_CreateDeviceObjects()
     graphics_pipeline_desc.multisample.count = 1;
     graphics_pipeline_desc.multisample.mask = UINT_MAX;
     graphics_pipeline_desc.multisample.alphaToCoverageEnabled = false;
-    graphics_pipeline_desc.layout = nullptr; // Use automatic layout generation
+    graphics_pipeline_desc.layout = NULL; // Use automatic layout generation
 
     // Create the vertex shader
     WGPUProgrammableStageDescriptor vertex_shader_desc = ImGui_ImplWGPU_CreateShaderModule(__glsl_shader_vert_spv, sizeof(__glsl_shader_vert_spv) / sizeof(uint32_t));
@@ -612,7 +612,7 @@ bool ImGui_ImplWGPU_CreateDeviceObjects()
     depth_stencil_state.depthBiasSlopeScale = 0;
 
     // Configure disabled depth-stencil state
-    graphics_pipeline_desc.depthStencil = nullptr;
+    graphics_pipeline_desc.depthStencil = NULL;
 
     g_pipelineState = wgpuDeviceCreateRenderPipeline(g_wgpuDevice, &graphics_pipeline_desc);
 
@@ -626,8 +626,8 @@ bool ImGui_ImplWGPU_CreateDeviceObjects()
 
     WGPUBindGroupEntry common_bg_entries[] =
     {
-        { nullptr, 0, g_resources.Uniforms, 0, sizeof(Uniforms), 0, 0 },
-        { nullptr, 1, 0, 0, 0, g_resources.Sampler, 0 },
+        { NULL, 0, g_resources.Uniforms, 0, sizeof(Uniforms), 0, 0 },
+        { NULL, 1, 0, 0, 0, g_resources.Sampler, 0 },
     };
 
     WGPUBindGroupDescriptor common_bg_descriptor = {};
