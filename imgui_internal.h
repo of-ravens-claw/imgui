@@ -216,7 +216,9 @@ namespace ImStb
 #if (__cplusplus >= 201103L) || (defined(_MSVC_LANG) && _MSVC_LANG >= 201103L)
 #define IM_STATIC_ASSERT(_COND)         static_assert(_COND, "")
 #else
-#define IM_STATIC_ASSERT(_COND)         typedef char static_assertion_##__line__[(_COND)?1:-1]
+#define __IM_APPEND1(x, y) x##y
+#define __IM_APPEND2(x, y) __IM_APPEND1(x, y)
+#define IM_STATIC_ASSERT(_COND)         typedef char __IM_APPEND2(static_assertion_, __LINE__)[(_COND)?1:-1]
 #endif
 
 // "Paranoid" Debug Asserts are meant to only be enabled during specific debugging/work, otherwise would slow down the code too much.
