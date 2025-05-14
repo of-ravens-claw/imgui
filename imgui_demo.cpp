@@ -6017,7 +6017,7 @@ void ImGui::ShowAboutWindow(bool* p_open)
         ImGui::Text("define: __APPLE__");
 #endif
 #ifdef _MSC_VER
-        ImGui::Text("define: _MSC_VER=%d", _MSC_VER);
+        ImGui::Text("define: _MSC_VER=%d", (int)_MSC_VER);
 #endif
 #ifdef _MSVC_LANG
         ImGui::Text("define: _MSVC_LANG=%d", (int)_MSVC_LANG);
@@ -6033,6 +6033,15 @@ void ImGui::ShowAboutWindow(bool* p_open)
 #endif
 #ifdef __clang_version__
         ImGui::Text("define: __clang_version__=%s", __clang_version__);
+#endif
+#ifdef __MWERKS__
+        ImGui::Text("define: __MWERKS__=0x%X", (int)__MWERKS__);
+#endif
+#ifdef __CWCC__
+        ImGui::Text("define: __CWCC__=0x%X", (int)__CWCC__);
+#endif
+#ifdef __CWBUILD__
+        ImGui::Text("define: __CWBUILD__=%d", (int)__CWBUILD__);
 #endif
         ImGui::Separator();
         ImGui::Text("io.BackendPlatformName: %s", io.BackendPlatformName ? io.BackendPlatformName : "NULL");
