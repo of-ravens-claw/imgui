@@ -12,6 +12,7 @@
 
 // CHANGELOG
 // (minor and older changes stripped away, please see git history for details)
+//  2026-10-15: DirectX9: Use shaders instead of the fixed-function pipeline.
 //  2021-06-29: Reorganized backend to pull data from a single structure to facilitate usage with multiple-contexts (all g_XXXX access changed to bd->XXXX).
 //  2021-06-25: DirectX9: Explicitly disable texture state stages after >= 1.
 //  2021-05-19: DirectX9: Replaced direct access to ImDrawCmd::TextureId with a call to ImDrawCmd::GetTexID(). (will become a requirement)
@@ -35,16 +36,23 @@
 
 // DirectX
 #include <d3d9.h>
+#include <d3dcompiler.h>
+#if defined(_MSC_VER)
+#pragma comment(lib, "d3dcompiler.lib")
+#endif
 
 // DirectX data
 struct ImGui_ImplDX9_Data
 {
-    LPDIRECT3DDEVICE9           pd3dDevice;
-    LPDIRECT3DVERTEXBUFFER9     pVB;
-    LPDIRECT3DINDEXBUFFER9      pIB;
-    LPDIRECT3DTEXTURE9          FontTexture;
-    int                         VertexBufferSize;
-    int                         IndexBufferSize;
+    LPDIRECT3DDEVICE9            pd3dDevice;
+    LPDIRECT3DVERTEXBUFFER9      pVB;
+    LPDIRECT3DINDEXBUFFER9       pIB;
+    LPDIRECT3DVERTEXSHADER9      pVertexShader;
+    LPDIRECT3DPIXELSHADER9       pPixelShader;
+    LPDIRECT3DVERTEXDECLARATION9 pVertexDecl;
+    LPDIRECT3DTEXTURE9           FontTexture;
+    int                          VertexBufferSize;
+    int                          IndexBufferSize;
 
     ImGui_ImplDX9_Data()        { memset((void*)this, 0, sizeof(*this)); VertexBufferSize = 5000; IndexBufferSize = 10000; }
 };
@@ -55,7 +63,6 @@ struct CUSTOMVERTEX
     D3DCOLOR col;
     float    uv[2];
 };
-#define D3DFVF_CUSTOMVERTEX (D3DFVF_XYZ|D3DFVF_DIFFUSE|D3DFVF_TEX1)
 
 #ifdef IMGUI_USE_BGRA_PACKED_COLOR
 #define IMGUI_COL_TO_DX9_ARGB(_COL)     (_COL)
@@ -84,11 +91,11 @@ static void ImGui_ImplDX9_SetupRenderState(ImDrawData* draw_data)
     vp.MaxZ = 1.0f;
     bd->pd3dDevice->SetViewport(&vp);
 
-    // Setup render state: fixed-pipeline, alpha-blending, no face culling, no depth testing, shade mode (for gradient), bilinear sampling.
-    bd->pd3dDevice->SetPixelShader(NULL);
-    bd->pd3dDevice->SetVertexShader(NULL);
+    // Setup render state
+    bd->pd3dDevice->SetPixelShader(bd->pPixelShader);
+    bd->pd3dDevice->SetVertexShader(bd->pVertexShader);
+    bd->pd3dDevice->SetVertexDeclaration(bd->pVertexDecl);
     bd->pd3dDevice->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
-    bd->pd3dDevice->SetRenderState(D3DRS_SHADEMODE, D3DSHADE_GOURAUD);
     bd->pd3dDevice->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
     bd->pd3dDevice->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
     bd->pd3dDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
@@ -107,36 +114,24 @@ static void ImGui_ImplDX9_SetupRenderState(ImDrawData* draw_data)
     bd->pd3dDevice->SetRenderState(D3DRS_STENCILENABLE, FALSE);
     bd->pd3dDevice->SetRenderState(D3DRS_CLIPPING, TRUE);
     bd->pd3dDevice->SetRenderState(D3DRS_LIGHTING, FALSE);
-    bd->pd3dDevice->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-    bd->pd3dDevice->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-    bd->pd3dDevice->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-    bd->pd3dDevice->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
-    bd->pd3dDevice->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
-    bd->pd3dDevice->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
-    bd->pd3dDevice->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-    bd->pd3dDevice->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
     bd->pd3dDevice->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
     bd->pd3dDevice->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
 
     // Setup orthographic projection matrix
     // Our visible imgui space lies from draw_data->DisplayPos (top left) to draw_data->DisplayPos+data_data->DisplaySize (bottom right). DisplayPos is (0,0) for single viewport apps.
-    // Being agnostic of whether <d3dx9.h> or <DirectXMath.h> can be used, we aren't relying on D3DXMatrixIdentity()/D3DXMatrixOrthoOffCenterLH() or DirectX::XMMatrixIdentity()/DirectX::XMMatrixOrthographicOffCenterLH()
     {
         float L = draw_data->DisplayPos.x + 0.5f;
         float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x + 0.5f;
         float T = draw_data->DisplayPos.y + 0.5f;
         float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y + 0.5f;
-        D3DMATRIX mat_identity = { { { 1.0f, 0.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f, 0.0f,  0.0f, 0.0f, 0.0f, 1.0f } } };
-        D3DMATRIX mat_projection =
-        { { {
-            2.0f/(R-L),   0.0f,         0.0f,  0.0f,
-            0.0f,         2.0f/(T-B),   0.0f,  0.0f,
-            0.0f,         0.0f,         0.5f,  0.0f,
-            (L+R)/(L-R),  (T+B)/(B-T),  0.5f,  1.0f
-        } } };
-        bd->pd3dDevice->SetTransform(D3DTS_WORLD, &mat_identity);
-        bd->pd3dDevice->SetTransform(D3DTS_VIEW, &mat_identity);
-        bd->pd3dDevice->SetTransform(D3DTS_PROJECTION, &mat_projection);
+        float mvp[4][4] =
+        {
+            { 2.0f / (R - L),   0.0f,           0.0f,       0.0f },
+            { 0.0f,         2.0f / (T - B),     0.0f,       0.0f },
+            { 0.0f,         0.0f,           0.5f,       0.0f },
+            { (R + L) / (L - R),  (T + B) / (B - T),    0.5f,       1.0f },
+        };
+        bd->pd3dDevice->SetVertexShaderConstantF(0, &mvp[0][0], 4);
     }
 }
 
@@ -153,7 +148,7 @@ void ImGui_ImplDX9_RenderDrawData(ImDrawData* draw_data)
     {
         if (bd->pVB) { bd->pVB->Release(); bd->pVB = NULL; }
         bd->VertexBufferSize = draw_data->TotalVtxCount + 5000;
-        if (bd->pd3dDevice->CreateVertexBuffer(bd->VertexBufferSize * sizeof(CUSTOMVERTEX), D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, D3DFVF_CUSTOMVERTEX, D3DPOOL_DEFAULT, &bd->pVB, NULL) < 0)
+        if (bd->pd3dDevice->CreateVertexBuffer(bd->VertexBufferSize * sizeof(CUSTOMVERTEX), D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, 0, D3DPOOL_DEFAULT, &bd->pVB, NULL) < 0)
             return;
     }
     if (!bd->pIB || bd->IndexBufferSize < draw_data->TotalIdxCount)
@@ -173,12 +168,6 @@ void ImGui_ImplDX9_RenderDrawData(ImDrawData* draw_data)
         d3d9_state_block->Release();
         return;
     }
-
-    // Backup the DX9 transform (DX9 documentation suggests that it is included in the StateBlock but it doesn't appear to)
-    D3DMATRIX last_world, last_view, last_projection;
-    bd->pd3dDevice->GetTransform(D3DTS_WORLD, &last_world);
-    bd->pd3dDevice->GetTransform(D3DTS_VIEW, &last_view);
-    bd->pd3dDevice->GetTransform(D3DTS_PROJECTION, &last_projection);
 
     // Allocate buffers
     CUSTOMVERTEX* vtx_dst;
@@ -221,7 +210,6 @@ void ImGui_ImplDX9_RenderDrawData(ImDrawData* draw_data)
     bd->pIB->Unlock();
     bd->pd3dDevice->SetStreamSource(0, bd->pVB, 0, sizeof(CUSTOMVERTEX));
     bd->pd3dDevice->SetIndices(bd->pIB);
-    bd->pd3dDevice->SetFVF(D3DFVF_CUSTOMVERTEX);
 
     // Setup desired DX state
     ImGui_ImplDX9_SetupRenderState(draw_data);
@@ -265,11 +253,6 @@ void ImGui_ImplDX9_RenderDrawData(ImDrawData* draw_data)
         global_idx_offset += cmd_list->IdxBuffer.Size;
         global_vtx_offset += cmd_list->VtxBuffer.Size;
     }
-
-    // Restore the DX9 transform
-    bd->pd3dDevice->SetTransform(D3DTS_WORLD, &last_world);
-    bd->pd3dDevice->SetTransform(D3DTS_VIEW, &last_view);
-    bd->pd3dDevice->SetTransform(D3DTS_PROJECTION, &last_projection);
 
     // Restore the DX9 state
     d3d9_state_block->Apply();
@@ -353,8 +336,84 @@ bool ImGui_ImplDX9_CreateDeviceObjects()
     ImGui_ImplDX9_Data* bd = ImGui_ImplDX9_GetBackendData();
     if (!bd || !bd->pd3dDevice)
         return false;
+
+    ImGui_ImplDX9_InvalidateDeviceObjects();
+
     if (!ImGui_ImplDX9_CreateFontsTexture())
         return false;
+
+     // By using D3DCompile() from <d3dcompiler.h> / d3dcompiler.lib, we introduce a dependency to a given version of d3dcompiler_XX.dll (see D3DCOMPILER_DLL_A)
+    // If you would like to use this DX9 sample code but remove this dependency you can:
+    //  1) compile once, save the compiled shader blobs into a file or source code and pass them to CreateVertexShader()/CreatePixelShader() [preferred solution]
+    //  2) use code to detect any version of the DLL and grab a pointer to D3DCompile from the DLL.
+    // See https://github.com/ocornut/imgui/pull/638 for sources and details.
+
+    // Create the vertex shader
+    {
+        static const char* vertexShader =
+            "float4x4 ProjMtx;\
+            void main(in float3 in_pos : POSITION,\
+                      in float4 in_col : COLOR0,\
+                      in float2 in_uv  : TEXCOORD0,\
+                      out float4 out_pos : POSITION,\
+                      out float4 out_col : COLOR0,\
+                      out float2 out_uv  : TEXCOORD0)\
+            {\
+                out_pos = mul(ProjMtx, float4(in_pos.xy, 0.0f, 1.0f));\
+                out_col = in_col;\
+                out_uv = in_uv; \
+            }";
+
+        // Compile Vertex Shader
+        ID3DBlob* vertexShaderBlob = nullptr;
+        if (FAILED(D3DCompile(vertexShader, strlen(vertexShader), nullptr, nullptr, nullptr, "main", "vs_2_0", 0, 0, &vertexShaderBlob, nullptr)))
+            return false; // NB: Pass ID3DBlob* pErrorBlob to D3DCompile() to get error showing in (const char*)pErrorBlob->GetBufferPointer(). Make sure to Release() the blob!
+        if (bd->pd3dDevice->CreateVertexShader((DWORD*)vertexShaderBlob->GetBufferPointer(), &bd->pVertexShader) != S_OK)
+        {
+            vertexShaderBlob->Release();
+            return false;
+        }
+
+        // Create the vertex declaration
+        D3DVERTEXELEMENT9 decl[] =
+        {
+            { 0, 0,  D3DDECLTYPE_FLOAT3,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
+            { 0, 12, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR,    0 },
+            { 0, 16, D3DDECLTYPE_FLOAT2,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+            D3DDECL_END()
+        };
+        if (bd->pd3dDevice->CreateVertexDeclaration(decl, &bd->pVertexDecl) != S_OK)
+        {
+            vertexShaderBlob->Release();
+            return false;
+        }
+
+        vertexShaderBlob->Release();
+    }
+
+    // Create the pixel shader
+    {
+        static const char* pixelShader =
+            "sampler TextureSampler : register(s0);\
+            float4 main(in float4 in_col : COLOR0,\
+                        in float2 in_uv  : TEXCOORD0) : COLOR0\
+            {\
+                return in_col * tex2D(TextureSampler, in_uv);\
+            }";
+
+        // Compile Pixel Shader
+        ID3DBlob* pixelShaderBlob = nullptr;
+        if (FAILED(D3DCompile(pixelShader, strlen(pixelShader), nullptr, nullptr, nullptr, "main", "ps_2_0", 0, 0, &pixelShaderBlob, nullptr)))
+            return false; // NB: Pass ID3DBlob* pErrorBlob to D3DCompile() to get error showing in (const char*)pErrorBlob->GetBufferPointer(). Make sure to Release() the blob!
+        if (bd->pd3dDevice->CreatePixelShader((DWORD*)pixelShaderBlob->GetBufferPointer(), &bd->pPixelShader) != S_OK)
+        {
+            pixelShaderBlob->Release();
+            return false;
+        }
+
+        pixelShaderBlob->Release();
+    }
+
     return true;
 }
 
@@ -365,6 +424,9 @@ void ImGui_ImplDX9_InvalidateDeviceObjects()
         return;
     if (bd->pVB) { bd->pVB->Release(); bd->pVB = NULL; }
     if (bd->pIB) { bd->pIB->Release(); bd->pIB = NULL; }
+    if (bd->pVertexShader) { bd->pVertexShader->Release(); bd->pVertexShader = NULL; }
+    if (bd->pPixelShader) { bd->pPixelShader->Release(); bd->pPixelShader = NULL; }
+    if (bd->pVertexDecl) { bd->pVertexDecl->Release(); bd->pVertexDecl = NULL; }
     if (bd->FontTexture) { bd->FontTexture->Release(); bd->FontTexture = NULL; ImGui::GetIO().Fonts->SetTexID(NULL); } // We copied bd->pFontTextureView to io.Fonts->TexID so let's clear that as well.
 }
 
@@ -373,6 +435,6 @@ void ImGui_ImplDX9_NewFrame()
     ImGui_ImplDX9_Data* bd = ImGui_ImplDX9_GetBackendData();
     IM_ASSERT(bd != NULL && "Did you call ImGui_ImplDX9_Init()?");
 
-    if (!bd->FontTexture)
+    if (!bd->pVertexShader)
         ImGui_ImplDX9_CreateDeviceObjects();
 }
