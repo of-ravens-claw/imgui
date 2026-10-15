@@ -1,5 +1,5 @@
 // dear imgui: Renderer Backend for DirectX9
-// This needs to be used along with a Platform Backend (e.g. Win32)
+// This needs to be used along with a Platform Backend (e.g. Win32, Xbox360)
 
 // Implemented features:
 //  [X] Renderer: User texture binding. Use 'LPDIRECT3DTEXTURE9' as ImTextureID. Read the FAQ about ImTextureID!

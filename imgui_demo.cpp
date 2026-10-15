@@ -90,6 +90,13 @@ Index of this file:
 #include <stdint.h>         // intptr_t
 #endif
 
+// NOTE: Will break the build for the Original Xbox.
+//  but, that's not supported right now, nor is DirectX8, so it's okay.
+// TODO: xtl.h has a lot of cool things, but it brings a lot of things we don't want with it.
+#ifdef _XBOX
+#include <xdk.h>
+#endif
+
 // Visual Studio warnings
 #ifdef _MSC_VER
 #pragma warning (disable: 4127)     // condition expression is constant
@@ -6042,6 +6049,12 @@ void ImGui::ShowAboutWindow(bool* p_open)
 #endif
 #ifdef __CWBUILD__
         ImGui::Text("define: __CWBUILD__=%d", (int)__CWBUILD__);
+#endif
+#ifdef _XBOX
+		ImGui::Text("define: _XBOX");
+#endif
+#ifdef _XDK_VER
+        ImGui::Text("define: _XDK_VER=%d", (int)_XDK_VER);
 #endif
         ImGui::Separator();
         ImGui::Text("io.BackendPlatformName: %s", io.BackendPlatformName ? io.BackendPlatformName : "NULL");

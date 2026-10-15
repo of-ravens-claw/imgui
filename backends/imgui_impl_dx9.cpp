@@ -1,5 +1,5 @@
 // dear imgui: Renderer Backend for DirectX9
-// This needs to be used along with a Platform Backend (e.g. Win32)
+// This needs to be used along with a Platform Backend (e.g. Win32, Xbox360)
 
 // Implemented features:
 //  [X] Renderer: User texture binding. Use 'LPDIRECT3DTEXTURE9' as ImTextureID. Read the FAQ about ImTextureID!
@@ -12,6 +12,7 @@
 
 // CHANGELOG
 // (minor and older changes stripped away, please see git history for details)
+//  2026-10-15: DirectX9: Added support for the Xbox 360.
 //  2026-10-15: DirectX9: Use shaders instead of the fixed-function pipeline.
 //  2021-06-29: Reorganized backend to pull data from a single structure to facilitate usage with multiple-contexts (all g_XXXX access changed to bd->XXXX).
 //  2021-06-25: DirectX9: Explicitly disable texture state stages after >= 1.
@@ -34,12 +35,23 @@
 #include "imgui.h"
 #include "imgui_impl_dx9.h"
 
+#ifdef _XBOX
+#include <xtl.h>
+
+// These don't exist on Xbox, but they're needed on Windows.
+// As such, we keep them here, to allow this code to build on both.
+#define D3DUSAGE_DYNAMIC 0x00000000L
+#define D3DLOCK_DISCARD  0x00000000L
+
+// D3DFMT_A8R8G8B8 is swizzled on Xbox 360.
+#define IMGUI_FONT_D3DFMT D3DFMT_LIN_A8R8G8B8
+#else
+#define IMGUI_FONT_D3DFMT D3DFMT_A8R8G8B8
+#endif
+
 // DirectX
 #include <d3d9.h>
-#include <d3dcompiler.h>
-#if defined(_MSC_VER)
-#pragma comment(lib, "d3dcompiler.lib")
-#endif
+#include <d3dx9.h>
 
 // DirectX data
 struct ImGui_ImplDX9_Data
@@ -91,10 +103,11 @@ static void ImGui_ImplDX9_SetupRenderState(ImDrawData* draw_data)
     vp.MaxZ = 1.0f;
     bd->pd3dDevice->SetViewport(&vp);
 
-    // Setup render state
     bd->pd3dDevice->SetPixelShader(bd->pPixelShader);
     bd->pd3dDevice->SetVertexShader(bd->pVertexShader);
     bd->pd3dDevice->SetVertexDeclaration(bd->pVertexDecl);
+
+	// Setup render state: alpha-blending, no face culling, no depth testing
     bd->pd3dDevice->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
     bd->pd3dDevice->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
     bd->pd3dDevice->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
@@ -108,12 +121,7 @@ static void ImGui_ImplDX9_SetupRenderState(ImDrawData* draw_data)
     bd->pd3dDevice->SetRenderState(D3DRS_SRCBLENDALPHA, D3DBLEND_ONE);
     bd->pd3dDevice->SetRenderState(D3DRS_DESTBLENDALPHA, D3DBLEND_INVSRCALPHA);
     bd->pd3dDevice->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
-    bd->pd3dDevice->SetRenderState(D3DRS_FOGENABLE, FALSE);
-    bd->pd3dDevice->SetRenderState(D3DRS_RANGEFOGENABLE, FALSE);
-    bd->pd3dDevice->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
     bd->pd3dDevice->SetRenderState(D3DRS_STENCILENABLE, FALSE);
-    bd->pd3dDevice->SetRenderState(D3DRS_CLIPPING, TRUE);
-    bd->pd3dDevice->SetRenderState(D3DRS_LIGHTING, FALSE);
     bd->pd3dDevice->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
     bd->pd3dDevice->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
 
@@ -172,12 +180,12 @@ void ImGui_ImplDX9_RenderDrawData(ImDrawData* draw_data)
     // Allocate buffers
     CUSTOMVERTEX* vtx_dst;
     ImDrawIdx* idx_dst;
-    if (bd->pVB->Lock(0, (UINT)(draw_data->TotalVtxCount * sizeof(CUSTOMVERTEX)), (void**)&vtx_dst, D3DLOCK_DISCARD) < 0)
+    if (bd->pVB->Lock(0, 0, (void**)&vtx_dst, D3DLOCK_DISCARD) < 0)
     {
         d3d9_state_block->Release();
         return;
     }
-    if (bd->pIB->Lock(0, (UINT)(draw_data->TotalIdxCount * sizeof(ImDrawIdx)), (void**)&idx_dst, D3DLOCK_DISCARD) < 0)
+    if (bd->pIB->Lock(0, 0, (void**)&idx_dst, D3DLOCK_DISCARD) < 0)
     {
         bd->pVB->Unlock();
         d3d9_state_block->Release();
@@ -311,7 +319,7 @@ static bool ImGui_ImplDX9_CreateFontsTexture()
 
     // Upload texture to graphics system
     bd->FontTexture = NULL;
-    if (bd->pd3dDevice->CreateTexture(width, height, 1, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &bd->FontTexture, NULL) < 0)
+    if (bd->pd3dDevice->CreateTexture(width, height, 1, D3DUSAGE_DYNAMIC, IMGUI_FONT_D3DFMT, D3DPOOL_DEFAULT, &bd->FontTexture, NULL) < 0)
         return false;
     D3DLOCKED_RECT tex_locked_rect;
     if (bd->FontTexture->LockRect(0, &tex_locked_rect, NULL, 0) != D3D_OK)
@@ -342,12 +350,6 @@ bool ImGui_ImplDX9_CreateDeviceObjects()
     if (!ImGui_ImplDX9_CreateFontsTexture())
         return false;
 
-     // By using D3DCompile() from <d3dcompiler.h> / d3dcompiler.lib, we introduce a dependency to a given version of d3dcompiler_XX.dll (see D3DCOMPILER_DLL_A)
-    // If you would like to use this DX9 sample code but remove this dependency you can:
-    //  1) compile once, save the compiled shader blobs into a file or source code and pass them to CreateVertexShader()/CreatePixelShader() [preferred solution]
-    //  2) use code to detect any version of the DLL and grab a pointer to D3DCompile from the DLL.
-    // See https://github.com/ocornut/imgui/pull/638 for sources and details.
-
     // Create the vertex shader
     {
         static const char* vertexShader =
@@ -365,9 +367,9 @@ bool ImGui_ImplDX9_CreateDeviceObjects()
             }";
 
         // Compile Vertex Shader
-        ID3DBlob* vertexShaderBlob = nullptr;
-        if (FAILED(D3DCompile(vertexShader, strlen(vertexShader), nullptr, nullptr, nullptr, "main", "vs_2_0", 0, 0, &vertexShaderBlob, nullptr)))
-            return false; // NB: Pass ID3DBlob* pErrorBlob to D3DCompile() to get error showing in (const char*)pErrorBlob->GetBufferPointer(). Make sure to Release() the blob!
+        LPD3DXBUFFER vertexShaderBlob = NULL;
+        if (FAILED(D3DXCompileShader(vertexShader, strlen(vertexShader), NULL, NULL, "main", "vs_2_0", 0, &vertexShaderBlob, NULL, NULL)))
+            return false; // NB: Pass ID3DXBuffer* pErrorMsg to D3DXCompileShader() to get error showing in (const char*)pErrorMsg->GetBufferPointer(). Make sure to Release() the blob!
         if (bd->pd3dDevice->CreateVertexShader((DWORD*)vertexShaderBlob->GetBufferPointer(), &bd->pVertexShader) != S_OK)
         {
             vertexShaderBlob->Release();
@@ -402,9 +404,9 @@ bool ImGui_ImplDX9_CreateDeviceObjects()
             }";
 
         // Compile Pixel Shader
-        ID3DBlob* pixelShaderBlob = nullptr;
-        if (FAILED(D3DCompile(pixelShader, strlen(pixelShader), nullptr, nullptr, nullptr, "main", "ps_2_0", 0, 0, &pixelShaderBlob, nullptr)))
-            return false; // NB: Pass ID3DBlob* pErrorBlob to D3DCompile() to get error showing in (const char*)pErrorBlob->GetBufferPointer(). Make sure to Release() the blob!
+        LPD3DXBUFFER pixelShaderBlob = NULL;
+        if (FAILED(D3DXCompileShader(pixelShader, strlen(pixelShader), NULL, NULL, "main", "ps_2_0", 0, &pixelShaderBlob, NULL, NULL)))
+            return false; // NB: Pass ID3DXBuffer* pErrorMsg to D3DXCompileShader() to get error showing in (const char*)pErrorMsg->GetBufferPointer(). Make sure to Release() the blob!
         if (bd->pd3dDevice->CreatePixelShader((DWORD*)pixelShaderBlob->GetBufferPointer(), &bd->pPixelShader) != S_OK)
         {
             pixelShaderBlob->Release();
