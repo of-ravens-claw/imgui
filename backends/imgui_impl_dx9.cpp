@@ -17,6 +17,7 @@
 
 // CHANGELOG
 // (minor and older changes stripped away, please see git history for details)
+//  2026-10-15: DirectX9: Further improvements now that we've moved away from the fixed-function pipeline.
 //  2026-10-08: DirectX9: Use shaders instead of the fixed-function pipeline.
 //  2026-04-23: Added support for standard draw callbacks (in platform_io): DrawCallback_ResetRenderState, DrawCallback_SetSamplerLinear, DrawCallback_SetSamplerNearest. (#9378)
 //  2026-03-19: Fixed issue in ImGui_ImplDX9_UpdateTexture() if ImTextureID_Invalid is defined to be != 0, which became the default since 2026-03-12. (#9295, #9310)
@@ -71,23 +72,9 @@ struct ImGui_ImplDX9_Data
     LPDIRECT3DVERTEXDECLARATION9 pVertexDecl;
     int                          VertexBufferSize;
     int                          IndexBufferSize;
-    bool                         HasRgbaSupport;
 
     ImGui_ImplDX9_Data()         { memset((void*)this, 0, sizeof(*this)); VertexBufferSize = 5000; IndexBufferSize = 10000; }
 };
-
-struct CUSTOMVERTEX
-{
-    float    pos[3];
-    D3DCOLOR col;
-    float    uv[2];
-};
-
-#ifdef IMGUI_USE_BGRA_PACKED_COLOR
-#define IMGUI_COL_TO_DX9_ARGB(_COL)     (_COL)
-#else
-#define IMGUI_COL_TO_DX9_ARGB(_COL)     (((_COL) & 0xFF00FF00) | (((_COL) & 0xFF0000) >> 16) | (((_COL) & 0xFF) << 16))
-#endif
 
 // Backend data stored in io.BackendRendererUserData to allow support for multiple Dear ImGui contexts
 // It is STRONGLY preferred that you use docking branch with multi-viewports (== single Dear ImGui context + multiple windows) instead of multiple Dear ImGui contexts.
@@ -112,10 +99,11 @@ static void ImGui_ImplDX9_SetupRenderState(ImDrawData* draw_data)
     LPDIRECT3DDEVICE9 device = bd->pd3dDevice;
     device->SetViewport(&vp);
 
-    // Setup render states (No fixed-function pipeline setup needed for transform/lighting/etc.)
     device->SetPixelShader(bd->pPixelShader);
     device->SetVertexShader(bd->pVertexShader);
     device->SetVertexDeclaration(bd->pVertexDecl);
+
+    // Setup render state: alpha-blending, no face culling, no depth testing, bilinear sampling.
     device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
     device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
     device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
@@ -129,12 +117,7 @@ static void ImGui_ImplDX9_SetupRenderState(ImDrawData* draw_data)
     device->SetRenderState(D3DRS_SRCBLENDALPHA, D3DBLEND_ONE);
     device->SetRenderState(D3DRS_DESTBLENDALPHA, D3DBLEND_INVSRCALPHA);
     device->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
-    device->SetRenderState(D3DRS_FOGENABLE, FALSE);
-    device->SetRenderState(D3DRS_RANGEFOGENABLE, FALSE);
-    device->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
     device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
-    device->SetRenderState(D3DRS_CLIPPING, TRUE);
-    device->SetRenderState(D3DRS_LIGHTING, FALSE);
     device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
     device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
     device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
@@ -185,7 +168,7 @@ void ImGui_ImplDX9_RenderDrawData(ImDrawData* draw_data)
     {
         if (bd->pVB) { bd->pVB->Release(); bd->pVB = nullptr; }
         bd->VertexBufferSize = draw_data->TotalVtxCount + 5000;
-        if (device->CreateVertexBuffer((UINT)bd->VertexBufferSize * sizeof(CUSTOMVERTEX), D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, 0, D3DPOOL_DEFAULT, &bd->pVB, nullptr) < 0)
+        if (device->CreateVertexBuffer((UINT)bd->VertexBufferSize * sizeof(ImDrawVert), D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, 0, D3DPOOL_DEFAULT, &bd->pVB, nullptr) < 0)
             return;
     }
     if (!bd->pIB || bd->IndexBufferSize < draw_data->TotalIdxCount)
@@ -207,9 +190,9 @@ void ImGui_ImplDX9_RenderDrawData(ImDrawData* draw_data)
     }
 
     // Allocate buffers
-    CUSTOMVERTEX* vtx_dst;
+    ImDrawVert* vtx_dst;
     ImDrawIdx* idx_dst;
-    if (bd->pVB->Lock(0, (UINT)(draw_data->TotalVtxCount * sizeof(CUSTOMVERTEX)), (void**)&vtx_dst, D3DLOCK_DISCARD) < 0)
+    if (bd->pVB->Lock(0, (UINT)(draw_data->TotalVtxCount * sizeof(ImDrawVert)), (void**)&vtx_dst, D3DLOCK_DISCARD) < 0)
     {
         state_block->Release();
         return;
@@ -221,30 +204,18 @@ void ImGui_ImplDX9_RenderDrawData(ImDrawData* draw_data)
         return;
     }
 
-    // Copy and convert all vertices into a single contiguous buffer, convert colors to DX9 default format.
-    // FIXME-OPT: This is a minor waste of resource, the ideal is to use imconfig.h and
-    //  1) to avoid repacking colors:   #define IMGUI_USE_BGRA_PACKED_COLOR
-    //  2) to avoid repacking vertices: #define IMGUI_OVERRIDE_DRAWVERT_STRUCT_LAYOUT struct ImDrawVert { ImVec2 pos; float z; ImU32 col; ImVec2 uv; }
+    // Copy and convert all vertices into a single contiguous buffer.
     for (const ImDrawList* draw_list : draw_data->CmdLists)
     {
-        const ImDrawVert* vtx_src = draw_list->VtxBuffer.Data;
-        for (int i = 0; i < draw_list->VtxBuffer.Size; i++)
-        {
-            vtx_dst->pos[0] = vtx_src->pos.x;
-            vtx_dst->pos[1] = vtx_src->pos.y;
-            vtx_dst->pos[2] = 0.0f;
-            vtx_dst->col = IMGUI_COL_TO_DX9_ARGB(vtx_src->col);
-            vtx_dst->uv[0] = vtx_src->uv.x;
-            vtx_dst->uv[1] = vtx_src->uv.y;
-            vtx_dst++;
-            vtx_src++;
-        }
+        memcpy(vtx_dst, draw_list->VtxBuffer.Data, draw_list->VtxBuffer.Size * sizeof(ImDrawVert));
+        vtx_dst += draw_list->VtxBuffer.Size;
+
         memcpy(idx_dst, draw_list->IdxBuffer.Data, draw_list->IdxBuffer.Size * sizeof(ImDrawIdx));
         idx_dst += draw_list->IdxBuffer.Size;
     }
     bd->pVB->Unlock();
     bd->pIB->Unlock();
-    device->SetStreamSource(0, bd->pVB, 0, sizeof(CUSTOMVERTEX));
+    device->SetStreamSource(0, bd->pVB, 0, sizeof(ImDrawVert));
     device->SetIndices(bd->pIB);
 
     // Setup desired DX state
@@ -312,24 +283,12 @@ static bool ImGui_ImplDX9_CheckFormatSupport(LPDIRECT3DDEVICE9 pDevice, D3DFORMA
     return support;
 }
 
-// Convert RGBA32 to BGRA32 (because RGBA32 is not well supported by DX9 devices)
 static void ImGui_ImplDX9_CopyTextureRegion(bool tex_use_colors, const ImU32* src, int src_pitch, ImU32* dst, int dst_pitch, int w, int h)
 {
-#ifndef IMGUI_USE_BGRA_PACKED_COLOR
-    ImGui_ImplDX9_Data* bd = ImGui_ImplDX9_GetBackendData();
-    const bool convert_rgba_to_bgra = (!bd->HasRgbaSupport && tex_use_colors);
-#else
-    const bool convert_rgba_to_bgra = false;
-    IM_UNUSED(tex_use_colors);
-#endif
     for (int y = 0; y < h; y++)
     {
         const ImU32* src_p = (const ImU32*)(const void*)((const unsigned char*)src + src_pitch * y);
         ImU32* dst_p = (ImU32*)(void*)((unsigned char*)dst + dst_pitch * y);
-        if (convert_rgba_to_bgra)
-            for (int x = w; x > 0; x--, src_p++, dst_p++) // Convert copy
-                *dst_p = IMGUI_COL_TO_DX9_ARGB(*src_p);
-        else
             memcpy(dst_p, src_p, w * 4); // Raw copy
     }
 }
@@ -345,7 +304,7 @@ void ImGui_ImplDX9_UpdateTexture(ImTextureData* tex)
         IM_ASSERT(tex->TexID == ImTextureID_Invalid && tex->BackendUserData == nullptr);
         IM_ASSERT(tex->Format == ImTextureFormat_RGBA32);
         LPDIRECT3DTEXTURE9 dx_tex = nullptr;
-        HRESULT hr = bd->pd3dDevice->CreateTexture(tex->Width, tex->Height, 1, D3DUSAGE_DYNAMIC, bd->HasRgbaSupport ? D3DFMT_A8B8G8R8 : D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &dx_tex, nullptr);
+        HRESULT hr = bd->pd3dDevice->CreateTexture(tex->Width, tex->Height, 1, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &dx_tex, nullptr);
         if (hr < 0)
         {
             IM_ASSERT(hr >= 0 && "Backend failed to create texture!");
@@ -408,18 +367,18 @@ bool ImGui_ImplDX9_CreateDeviceObjects()
     // Create the vertex shader
     {
         static const char* vertexShader =
-            "float4x4 ProjMtx;\
-            void main(in float3 in_pos : POSITION,\
-                      in float4 in_col : COLOR0,\
-                      in float2 in_uv  : TEXCOORD0,\
-                      out float4 out_pos : POSITION,\
-                      out float4 out_col : COLOR0,\
-                      out float2 out_uv  : TEXCOORD0)\
-            {\
-                out_pos = mul(ProjMtx, float4(in_pos.xy, 0.0f, 1.0f));\
-                out_col = in_col;\
-                out_uv = in_uv; \
-            }";
+            "float4x4 ProjMtx;\n"
+            "void main(in float2 in_pos : POSITION,\n"
+            "          in float2 in_uv  : TEXCOORD0,\n"
+            "          in float4 in_col : COLOR0,\n"
+            "          out float4 out_pos : POSITION,\n"
+            "          out float4 out_col : COLOR0,\n"
+            "          out float2 out_uv  : TEXCOORD0)\n"
+            "{\n"
+            "    out_pos = mul(ProjMtx, float4(in_pos, 0.0f, 1.0f));\n"
+            "    out_col = in_col;\n"
+            "    out_uv = in_uv;\n"
+            "}\n";
 
         // Compile Vertex Shader
         ID3DBlob* vertexShaderBlob = nullptr;
@@ -434,9 +393,9 @@ bool ImGui_ImplDX9_CreateDeviceObjects()
         // Create the vertex declaration
         D3DVERTEXELEMENT9 decl[] =
         {
-            { 0, 0,  D3DDECLTYPE_FLOAT3,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
-            { 0, 12, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR,    0 },
-            { 0, 16, D3DDECLTYPE_FLOAT2,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+            { 0, 0,  D3DDECLTYPE_FLOAT2,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
+            { 0, 8,  D3DDECLTYPE_FLOAT2,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+            { 0, 16, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR,    0 },
             D3DDECL_END()
         };
         if (bd->pd3dDevice->CreateVertexDeclaration(decl, &bd->pVertexDecl) != S_OK)
@@ -451,12 +410,16 @@ bool ImGui_ImplDX9_CreateDeviceObjects()
     // Create the pixel shader
     {
         static const char* pixelShader =
-            "sampler TextureSampler : register(s0);\
-            float4 main(in float4 in_col : COLOR0,\
-                        in float2 in_uv  : TEXCOORD0) : COLOR0\
-            {\
-                return in_col * tex2D(TextureSampler, in_uv);\
-            }";
+            "sampler TextureSampler : register(s0);\n"
+            "float4 main(in float4 in_col : COLOR0,\n"
+            "            in float2 in_uv  : TEXCOORD0) : COLOR0\n"
+            "{\n"
+#ifdef IMGUI_USE_BGRA_PACKED_COLOR
+            "    return in_col * tex2D(TextureSampler, in_uv);\n"
+#else
+            "    return (in_col * tex2D(TextureSampler, in_uv)).bgra;\n"
+#endif
+            "}\n";
 
         // Compile Pixel Shader
         ID3DBlob* pixelShaderBlob = nullptr;
@@ -526,7 +489,6 @@ bool ImGui_ImplDX9_Init(IDirect3DDevice9* device)
 
     bd->pd3dDevice = device;
     bd->pd3dDevice->AddRef();
-    bd->HasRgbaSupport = ImGui_ImplDX9_CheckFormatSupport(bd->pd3dDevice, D3DFMT_A8B8G8R8);
 
     return true;
 }
